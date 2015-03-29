@@ -6,21 +6,40 @@ if [ -r /etc/defaults/periodic.conf ]; then
 fi
 
 : ${zfs_snapshot_cleanup_enable:="NO"}
-: ${zfs_snapshot_cleanup_count_property:="periodic:snapshots_to_keep"}
+: ${zfs_snapshot_cleanup_count_property_prefix:="periodic"}
+: ${zfs_snapshot_cleanup_types:="daily weekly monthly"}
 
 destroy_old_snapshots() {
+	local re
+	re=""
+	for type in ${zfs_snapshot_cleanup_types}; do
+		re="${re}|${type}"
+	done
+	re="${re#|}"
 	# Iterate over the list of filesystems and volumes that have number of
 	# snapshots to keep set.
-	zfs get -r -t filesystem,volume -H -o value,name "${zfs_snapshot_cleanup_count_property}" \
+	zfs get -r -t filesystem,volume -H -o value,name "${zfs_snapshot_cleanup_count_property_prefix}:snapshots_to_keep" \
 		| egrep '^[0-9]+[[:space:]]' | while read count name; do
 		# For each filesystem or volume iterate over all snapshots sorted
 		# by creation time (in reverse order) skipping first ${count}
 		# snapshots and deleting everything else.
 		zfs list -d 1 -t snapshot -o name -S creation -H "${name}" \
-			| awk "{i++; if (i > ${count}) print}" | while read snapname; do
+			| awk "\$1 !~ /@(${re})/ {i++; if (i > ${count}) print}" | while read snapname; do
 				echo "Destroying ${snapname}..."
 				zfs destroy -v "${snapname}"
 	   	done
+	done
+
+	# Do the same as above, but for each snapshot type.
+	for type in ${zfs_snapshot_cleanup_types}; do
+		zfs get -r -t filesystem,volume -H -o value,name "${zfs_snapshot_cleanup_count_property_prefix}:${type}_snapshots_to_keep" \
+			| egrep '^[0-9]+[[:space:]]' | while read count name; do
+			zfs list -d 1 -t snapshot -o name -S creation -H "${name}" \
+				| awk "/@${type}/ {i++; if (i > ${count}) print}" | while read snapname; do
+					echo "Destroying ${snapname}..."
+					zfs destroy -v "${snapname}"
+			done
+		done
 	done
 }
 
